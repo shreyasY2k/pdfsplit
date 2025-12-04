@@ -614,7 +614,7 @@
 
         <footer>
             <p>Client-side PDF processing • No files are uploaded to any server • 
-            <a href="https://github.com/shreyasY2k/pdfsplit" target="_blank">View on GitHub</a></p>
+            <a href="https://github.com" target="_blank">View on GitHub</a></p>
         </footer>
     </div>
 
@@ -686,19 +686,37 @@
             }
         }
 
+        function resetApplication() {
+            currentPDF = null;
+            pdfPreview.style.display = 'none';
+            progressSection.style.display = 'none';
+            downloadSection.style.display = 'none';
+            splitBtn.disabled = true;
+            clearStatus();
+            downloadGrid.innerHTML = '';
+            document.getElementById('pdfPages').value = '';
+            document.getElementById('imagePages').value = '';
+        }
+
         async function loadPDF(file) {
             try {
+                resetApplication();
                 showStatus('processing', 'Loading PDF...');
                 
                 const arrayBuffer = await file.arrayBuffer();
+                
+                // Store the file data
                 currentPDF = {
                     file: file,
                     arrayBuffer: arrayBuffer
                 };
 
-                // Load PDF with PDF.js to get page count
-                const pdfDoc = await pdfjsLib.getDocument(arrayBuffer).promise;
+                // Load PDF with PDF.js to get page count (clone buffer to avoid detachment)
+                const clonedBuffer = arrayBuffer.slice();
+                const pdfDoc = await pdfjsLib.getDocument(clonedBuffer).promise;
                 currentPDF.pageCount = pdfDoc.numPages;
+
+                console.log(`Loaded PDF: ${file.name}, Pages: ${pdfDoc.numPages}`);
 
                 // Display PDF info
                 displayPDFInfo(file, pdfDoc.numPages);
@@ -709,7 +727,8 @@
                 
             } catch (error) {
                 console.error('Error loading PDF:', error);
-                showStatus('error', 'Error loading PDF. Please ensure the file is not corrupted.');
+                showStatus('error', 'Error loading PDF. Please ensure the file is not corrupted or password-protected.');
+                resetApplication();
             }
         }
 
@@ -767,7 +786,10 @@
         }
 
         async function processPDF() {
-            if (!currentPDF) return;
+            if (!currentPDF) {
+                showStatus('error', 'No PDF loaded');
+                return;
+            }
 
             const pageInput = selectedOption === 'pdf' ? 
                 document.getElementById('pdfPages').value : 
@@ -780,11 +802,15 @@
                 return;
             }
 
+            console.log(`Processing ${pageNumbers.length} pages:`, pageNumbers);
+            console.log(`Selected option: ${selectedOption}, Format: ${selectedFormat}`);
+
             try {
                 splitBtn.disabled = true;
                 progressSection.style.display = 'block';
                 downloadGrid.innerHTML = '';
                 downloadSection.style.display = 'none';
+                clearStatus();
 
                 if (selectedOption === 'pdf') {
                     await splitToPDFs(pageNumbers);
@@ -797,7 +823,7 @@
 
             } catch (error) {
                 console.error('Error processing PDF:', error);
-                showStatus('error', 'Error processing PDF. Please try again.');
+                showStatus('error', `Error processing PDF: ${error.message || 'Please try again.'}`);
             } finally {
                 splitBtn.disabled = false;
                 progressSection.style.display = 'none';
@@ -805,7 +831,9 @@
         }
 
         async function splitToPDFs(pageNumbers) {
-            const sourceDoc = await PDFLib.PDFDocument.load(currentPDF.arrayBuffer);
+            // Create a fresh clone of the ArrayBuffer to avoid detachment issues
+            const clonedBuffer = currentPDF.arrayBuffer.slice();
+            const sourceDoc = await PDFLib.PDFDocument.load(clonedBuffer);
             
             for (let i = 0; i < pageNumbers.length; i++) {
                 const pageNum = pageNumbers[i];
@@ -824,32 +852,48 @@
         }
 
         async function convertToImages(pageNumbers) {
-            const pdfDoc = await pdfjsLib.getDocument(currentPDF.arrayBuffer).promise;
-            
-            for (let i = 0; i < pageNumbers.length; i++) {
-                const pageNum = pageNumbers[i];
-                updateProgress((i / pageNumbers.length) * 100, `Converting page ${pageNum}...`);
+            try {
+                // Create a fresh clone of the ArrayBuffer to avoid detachment issues
+                const clonedBuffer = currentPDF.arrayBuffer.slice();
+                const pdfDoc = await pdfjsLib.getDocument(clonedBuffer).promise;
+                
+                for (let i = 0; i < pageNumbers.length; i++) {
+                    const pageNum = pageNumbers[i];
+                    updateProgress((i / pageNumbers.length) * 100, `Converting page ${pageNum}...`);
 
-                const page = await pdfDoc.getPage(pageNum);
-                const scale = 2.0; // Higher resolution
-                const viewport = page.getViewport({ scale });
+                    try {
+                        const page = await pdfDoc.getPage(pageNum);
+                        const scale = 2.0; // Higher resolution
+                        const viewport = page.getViewport({ scale });
 
-                const canvas = document.createElement('canvas');
-                const context = canvas.getContext('2d');
-                canvas.height = viewport.height;
-                canvas.width = viewport.width;
+                        const canvas = document.createElement('canvas');
+                        const context = canvas.getContext('2d');
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
 
-                await page.render({
-                    canvasContext: context,
-                    viewport: viewport
-                }).promise;
+                        await page.render({
+                            canvasContext: context,
+                            viewport: viewport
+                        }).promise;
 
-                canvas.toBlob(blob => {
-                    const extension = selectedFormat === 'png' ? 'png' : 'jpg';
-                    addDownload(blob, `page-${pageNum}.${extension}`, `Page ${pageNum}`, '🖼️');
-                }, `image/${selectedFormat === 'png' ? 'png' : 'jpeg'}`, 0.95);
+                        // Convert to blob and add download
+                        await new Promise((resolve) => {
+                            canvas.toBlob(blob => {
+                                const extension = selectedFormat === 'png' ? 'png' : 'jpg';
+                                addDownload(blob, `page-${pageNum}.${extension}`, `Page ${pageNum}`, '🖼️');
+                                resolve();
+                            }, `image/${selectedFormat === 'png' ? 'png' : 'jpeg'}`, 0.95);
+                        });
+                    } catch (pageError) {
+                        console.error(`Error converting page ${pageNum}:`, pageError);
+                        // Continue with other pages
+                    }
+                }
+                updateProgress(100, 'Complete!');
+            } catch (error) {
+                console.error('Error in convertToImages:', error);
+                throw error;
             }
-            updateProgress(100, 'Complete!');
         }
 
         function updateProgress(percent, text) {
